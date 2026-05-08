@@ -32,7 +32,7 @@ Updated 2026-05-08 after the adversarial release-readiness and module-extraction
 | Output privacy | Normal JSON output exposed local `source_path`, `raw_json`, and cache internals. | `letterboxd_cli.output` shapes public rows and strips private path/cache fields. |
 | DB safety | `sql` was called read-only but created/mutated DB files through schema setup. | `sql` opens SQLite in read-only mode and fails if the DB is missing. |
 | Schema durability | `CREATE TABLE IF NOT EXISTS` only; old DBs could miss columns. | `ensure_schema` now adds missing columns and sets `PRAGMA user_version`. |
-| God module | Everything lived in one large `cli.py`. | Core seams extracted: `auth.py`, `storage.py`, `normalization.py`, `exports.py`, `feeds.py`, `filters.py`, `web.py`, and `output.py`. `cli.py` now owns command orchestration plus the remaining live parsers/recommendations. |
+| God module | Everything lived in one large `cli.py`. | Core seams extracted: `auth.py`, `storage.py`, `normalization.py`, `exports.py`, `feeds.py`, `filters.py`, `parsers.py`, `recommendations.py`, `web.py`, and `output.py`. `cli.py` now owns command orchestration plus live fetch/mutation workflows. |
 | Fake command option | `live search --type all` implied support that only parsed films. | The parser now exposes only `--type films`. |
 | Recommendations crawl budget | Defaults could fetch a lot of detail pages synchronously. | `recs` has `--detail-limit` and `--request-delay`, with a smaller default detail cap. |
 | Install/docs | Local editable install only, invalid Makefile JSON example, quick start before auth. | README distinguishes local checkout from future public install, fixes global flag ordering, and puts auth before account sync. |
@@ -50,10 +50,10 @@ The remaining release gates after this pass are:
 - The public repo `jamespheffernan/letterboxd-cli` is created and pushed after explicit approval.
 - Keep an eye on browser-cookie storage drift. The Chrome signed-in import has been smoke-tested locally, but browser vendors can change encrypted-cookie formats.
 - GitHub Actions runs on the pushed commit.
-- The large `cli.py` keeps shrinking. The next serious extractions are live parser modules and recommendation scoring.
+- The large `cli.py` is no longer carrying parser/scoring internals. Future extractions should happen only when live fetch orchestration or mutation workflows become hard to review.
 - PyPI/Homebrew remain deferred beyond v0.1.0.
 - Optional niceties such as shell completions, a docs site, and release automation can wait, but they are the next Steinberger-style polish layer.
 
 ## Current Verdict
 
-This is now release-candidate quality for a small personal OSS CLI, with explicit remaining release blockers. It is not yet at `gogcli` scale, and it should not pretend to be. It is much closer to the way Peter's repos behave: direct promise, clear auth model, safer automation defaults, parseable output, fixture-backed tests, smaller modules around risky behavior, and one command to verify the project.
+This is now release-candidate quality for a small personal OSS CLI, with explicit remaining release blockers. It is not yet at `gogcli` scale, and it should not pretend to be. It is much closer to the way Peter's repos behave: direct promise, clear auth model, safer automation defaults, parseable output, fixture-backed tests, focused modules around risky behavior, and one command to verify the project.

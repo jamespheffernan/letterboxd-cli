@@ -4,13 +4,15 @@
 
 ## Current Modules
 
-- `letterboxd_cli.cli`: argparse setup, command handlers, live page parsers, web mutation workflows, and recommendation scoring.
+- `letterboxd_cli.cli`: argparse setup, command handlers, live fetch orchestration, and web mutation workflows.
 - `letterboxd_cli.auth`: `login`, `auth save/status/clear`, signed-in username detection, and manual/browser-session handoff.
 - `letterboxd_cli.storage`: SQLite connections, schema creation, migrations, inserts, and query selection.
 - `letterboxd_cli.normalization`: shared parsing for dates, ratings, row hashes, search text, and CSV/feed row primitives.
 - `letterboxd_cli.exports`: account export discovery and CSV row normalization.
 - `letterboxd_cli.feeds`: public RSS fetch/parse behavior.
 - `letterboxd_cli.filters`: Letterboxd filter state and URL segment construction for global, account, contributor, and list film sets.
+- `letterboxd_cli.parsers`: Letterboxd HTML parsing, film/person/list/live row extraction, URL normalization, and display cleanup helpers.
+- `letterboxd_cli.recommendations`: list quality scoring, recommendation scoring, person-key normalization, watched-row slug extraction, and crawl pacing.
 - `letterboxd_cli.web`: session storage, cookie validation, canonical Letterboxd origin checks, HTTP retries, JSON response handling, and web-output helpers.
 - `letterboxd_cli.browser_cookies`: explicit browser-cookie import for Letterboxd auth, scoped to Letterboxd cookie rows and verified before session save.
 - `letterboxd_cli.output`: public display rows, provenance shaping, and redaction of local cache internals.
@@ -23,6 +25,8 @@
 - Local SQLite behavior belongs in `storage.py`; command handlers should not hand-roll schema or SQL query assembly.
 - CSV export and RSS ingestion belong in `exports.py` and `feeds.py`.
 - Letterboxd filter URL construction belongs in `filters.py`.
+- Letterboxd HTML parsing belongs in `parsers.py`; command handlers should not contain regexes for page shapes.
+- Recommendation/list-quality scoring belongs in `recommendations.py`; command handlers should only assemble inputs and print results.
 - Shared row normalization belongs in `normalization.py`.
 - Normal user-facing row shaping belongs in `output.py`.
 - Parser changes must regenerate `docs/COMMANDS.md`.
@@ -33,8 +37,8 @@
 
 The next sensible extractions are:
 
-- `parsers.py` or smaller parser modules for live posters, film detail, lists, people, availability, and member activity.
-- `recommendations.py` for scoring, watched exclusion, taste signals, and request-budget behavior.
-- focused test files that mirror the extracted modules once more parser/recommendation code moves out of `cli.py`.
+- `live.py` for live fetch orchestration if those workflows grow beyond the current command handlers.
+- `mutations.py` for watchlist/diary/rating/review form workflows if the state-changing surface expands.
+- focused parser/recommendation test files if those modules start carrying more direct unit coverage than command-level regression tests.
 
 Do not split these only for line count. Extract when a change needs a tighter test boundary or isolates security, output, parsing, or persistence behavior.

@@ -41,7 +41,7 @@ Status as of 2026-05-08: local release candidate. Do not publish without explici
 - [x] Added opt-in `lbd login --browser` import for local Letterboxd browser cookies, with live verification before save.
 - [x] Removed local import paths and raw cache internals from normal JSON output.
 - [x] Made `sql` read-only and prevented it from creating a missing database.
-- [x] Added module boundaries for auth, storage, normalization, exports, feeds, filters, web/session behavior, and output/provenance shaping.
+- [x] Added module boundaries for auth, storage, normalization, exports, feeds, filters, parsers, recommendations, web/session behavior, and output/provenance shaping.
 - [x] Added schema migration for pre-release local databases.
 - [x] Expanded CI to Linux, macOS, and Windows.
 - [x] Added parser fixtures and regression tests for the safety issues above.
