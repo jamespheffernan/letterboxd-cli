@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "letterboxd-cli"
+version = "0.1.0"
+description = "A local-first CLI for live Letterboxd workflows, exports, RSS feeds, and JSON automation."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "James Heffernan" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["letterboxd", "cli", "movies", "film", "sqlite"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+]
+dependencies = ["cryptography>=42"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.15"]
+
+[project.scripts]
+lbd = "letterboxd_cli.cli:main"
+letterboxd = "letterboxd_cli.cli:main"
+lbw = "letterboxd_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jamespheffernan/letterboxd-cli"
+Repository = "https://github.com/jamespheffernan/letterboxd-cli"
+Issues = "https://github.com/jamespheffernan/letterboxd-cli/issues"
+
+[tool.setuptools.packages.find]
+include = ["letterboxd_cli*"]

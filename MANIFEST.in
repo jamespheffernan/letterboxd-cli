@@ -1,0 +1,13 @@
+include CONTRIBUTING.md
+include AGENTS.md
+include CHANGELOG.md
+include SECURITY.md
+include .env.example
+include Makefile
+recursive-include scripts *.py
+include docs/COMMANDS.md
+include docs/ARCHITECTURE.md
+include docs/RELEASING.md
+exclude docs/RELEASE_CHECKLIST.md
+exclude docs/STEIPETE_COMPARISON.md
+recursive-include tests/fixtures *
