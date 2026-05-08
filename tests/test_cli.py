@@ -79,7 +79,7 @@ def test_global_plain_prefers_parseable_csv(tmp_path: Path, capsys):
 def test_login_no_input_requires_explicit_cookie(tmp_path: Path, monkeypatch, capsys):
     db = tmp_path / "lbd.sqlite3"
     session = tmp_path / "session.json"
-    monkeypatch.setattr("letterboxd_cli.cli.read_clipboard", lambda: "letterboxd_session=test-session")
+    monkeypatch.setattr("letterboxd_cli.auth.read_clipboard", lambda: "letterboxd_session=test-session")
 
     assert main(["--db", str(db), "--session-file", str(session), "--no-input", "login"]) == 1
 
@@ -98,7 +98,7 @@ def test_login_rejects_placeholder_cookie(tmp_path: Path, capsys):
 
 def test_login_reports_invalid_clipboard(tmp_path: Path, monkeypatch, capsys):
     session = tmp_path / "session.json"
-    monkeypatch.setattr("letterboxd_cli.cli.read_clipboard", lambda: "not a cookie")
+    monkeypatch.setattr("letterboxd_cli.auth.read_clipboard", lambda: "not a cookie")
     monkeypatch.setattr("sys.stdin", TtyStringIO(""))
 
     assert main(["--session-file", str(session), "login"]) == 1
@@ -110,7 +110,7 @@ def test_login_reports_invalid_clipboard(tmp_path: Path, monkeypatch, capsys):
 def test_login_rejects_terminal_transcript_clipboard(tmp_path: Path, monkeypatch, capsys):
     session = tmp_path / "session.json"
     monkeypatch.setattr(
-        "letterboxd_cli.cli.read_clipboard",
+        "letterboxd_cli.auth.read_clipboard",
         lambda: "user@Mac Letterboxd CLI % lbd login\n"
         "Error: Cookie header should look like name=value; name2=value2.",
     )
@@ -126,7 +126,7 @@ def test_login_rejects_terminal_transcript_clipboard(tmp_path: Path, monkeypatch
 
 def test_login_rejects_unverified_cookie(tmp_path: Path, monkeypatch, capsys):
     session = tmp_path / "session.json"
-    monkeypatch.setattr("letterboxd_cli.cli.detect_username", lambda client: None)
+    monkeypatch.setattr("letterboxd_cli.auth.detect_username", lambda client: None)
 
     assert main(["--session-file", str(session), "login", "--cookie", "letterboxd_session=test-session"]) == 1
 
@@ -164,8 +164,8 @@ def test_login_imports_browser_cookie_source(tmp_path: Path, monkeypatch, capsys
         cookie_header="letterboxd.signed.in.as=exampleuser; letterboxd.user=session-value",
         cookie_names=("letterboxd.signed.in.as", "letterboxd.user"),
     )
-    monkeypatch.setattr("letterboxd_cli.cli.load_browser_cookie_sources", lambda browser, profile=None: [source])
-    monkeypatch.setattr("letterboxd_cli.cli.detect_username", lambda client: "exampleuser")
+    monkeypatch.setattr("letterboxd_cli.auth.load_browser_cookie_sources", lambda browser, profile=None: [source])
+    monkeypatch.setattr("letterboxd_cli.auth.detect_username", lambda client: "exampleuser")
 
     assert main(["--session-file", str(session), "login", "--browser", "chrome"]) == 0
 
@@ -406,11 +406,11 @@ def test_login_alias_saves_cookie(tmp_path: Path, monkeypatch, capsys):
     db = tmp_path / "lbd.sqlite3"
     session = tmp_path / "session.json"
     monkeypatch.setattr(
-        "letterboxd_cli.cli.read_clipboard",
+        "letterboxd_cli.auth.read_clipboard",
         lambda: "Cookie: letterboxd_session=test-session;\n letterboxd.signed.in.as=exampleuser",
     )
     monkeypatch.setattr("sys.stdin", TtyStringIO(""))
-    monkeypatch.setattr("letterboxd_cli.cli.detect_username", lambda client: "exampleuser")
+    monkeypatch.setattr("letterboxd_cli.auth.detect_username", lambda client: "exampleuser")
 
     assert main(["--db", str(db), "--session-file", str(session), "login"]) == 0
 

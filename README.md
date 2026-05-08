@@ -12,7 +12,7 @@ This project is not affiliated with Letterboxd. It uses the same account permiss
 
 ## Install
 
-Requires Python 3.11 or newer. There are no runtime package dependencies.
+Requires Python 3.11 or newer. The only runtime dependency is `cryptography`, used for explicit browser-cookie import.
 
 After the public repository is created, install the latest GitHub version with:
 

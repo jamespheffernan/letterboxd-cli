@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import html
 import io
 import json
@@ -14,103 +13,60 @@ import sys
 import textwrap
 import time
 import urllib.parse
-import urllib.request
 import zipfile
 from collections import Counter
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
-from xml.etree import ElementTree
 
 from letterboxd_cli import __version__
-from letterboxd_cli.browser_cookies import browser_choices, load_browser_cookie_sources
+from letterboxd_cli.auth import (
+    cmd_auth_clear,
+    cmd_auth_save,
+    cmd_auth_status,
+    cmd_login,
+    detect_username,
+    username_from_cookie,
+)
+from letterboxd_cli.browser_cookies import browser_choices
+from letterboxd_cli.exports import normalize_csv_row, read_csv_sources
+from letterboxd_cli.feeds import fetch_url, parse_rss
+from letterboxd_cli.filters import (
+    LETTERBOXD_SORTS,
+    LetterboxdFilters,
+    filtered_path,
+    filters_from_args,
+    filters_have_values,
+    is_global_films_base,
+    letterboxd_filter_segments,
+    looks_like_letterboxd_film_set,
+)
+from letterboxd_cli.normalization import (
+    build_search_text,
+    key_for,
+    normalize_date,
+    now_iso,
+    parse_int,
+    parse_rating,
+    parse_rating10,
+    parse_rating_from_text,
+    row_hash,
+    today_iso,
+)
 from letterboxd_cli.output import ensure_provenance, public_display_row
+from letterboxd_cli.storage import KIND_ALIASES, connect, ensure_schema, insert_entry, select_entries
 from letterboxd_cli.web import (
     LETTERBOXD_BASE_URL,
-    USER_AGENT,
     LetterboxdWebClient,
     LetterboxdWebError,
     WebResponse,
-    is_letterboxd_origin,
     parse_json_response,
     print_web_response,
-    read_clipboard,
     redact_sensitive_values,
-    validate_cookie_header,
-    write_private_json,
 )
 
 
 DEFAULT_DB = Path("~/.letterboxd-cli/letterboxd.sqlite3")
 DEFAULT_SESSION_FILE = Path("~/.letterboxd-cli/session.json")
-SCHEMA_VERSION = 1
-ENTRY_COLUMN_MIGRATIONS = {
-    "kind": "kind TEXT NOT NULL DEFAULT 'unknown'",
-    "name": "name TEXT",
-    "year": "year INTEGER",
-    "letterboxd_uri": "letterboxd_uri TEXT",
-    "rating": "rating REAL",
-    "date": "date TEXT",
-    "watched_date": "watched_date TEXT",
-    "rewatch": "rewatch INTEGER",
-    "tags": "tags TEXT",
-    "review": "review TEXT",
-    "like": "like INTEGER",
-    "url": "url TEXT",
-    "source_file": "source_file TEXT",
-    "source_path": "source_path TEXT",
-    "row_hash": "row_hash TEXT NOT NULL DEFAULT ''",
-    "raw_json": "raw_json TEXT NOT NULL DEFAULT '{}'",
-    "search_text": "search_text TEXT NOT NULL DEFAULT ''",
-    "imported_at": "imported_at TEXT NOT NULL DEFAULT ''",
-}
-
-
-KIND_ALIASES = {
-    "diary": "diary",
-    "history": "history",
-    "watched": "watched",
-    "watchlist": "watchlist",
-    "ratings": "rating",
-    "rating": "rating",
-    "reviews": "review",
-    "review": "review",
-    "likes": "like",
-    "like": "like",
-    "feed": "feed",
-}
-
-LETTERBOXD_SORTS = {
-    "popular": "popular",
-    "name": "by/name",
-    "release": "by/release",
-    "release-earliest": "by/release-earliest",
-    "rating": "by/rating",
-    "rating-lowest": "by/rating-lowest",
-    "your-rating": "by/your-rating",
-    "your-rating-lowest": "by/your-rating-lowest",
-    "shortest": "by/shortest",
-    "longest": "by/longest",
-}
-
-
-@dataclass(frozen=True)
-class CsvSource:
-    name: str
-    source_path: str
-    text: str
-
-
-@dataclass(frozen=True)
-class LetterboxdFilters:
-    year: int | None = None
-    decade: str | None = None
-    genres: tuple[str, ...] = ()
-    exclude_genres: tuple[str, ...] = ()
-    raw_segments: tuple[str, ...] = ()
-    sort: str = "popular"
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -661,22 +617,6 @@ def apply_global_output_mode(args: argparse.Namespace) -> None:
         args.format = "raw"
 
 
-def connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    if readonly:
-        if not path.exists():
-            raise ValueError(f"Database does not exist: {path}")
-        db = sqlite3.connect(sqlite_readonly_uri(path), uri=True)
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(path)
-    db.row_factory = sqlite3.Row
-    return db
-
-
-def sqlite_readonly_uri(path: Path) -> str:
-    return "file:" + urllib.parse.quote(str(path.resolve()), safe="/:") + "?mode=ro"
-
-
 def cmd_version(db: sqlite3.Connection | None, args: argparse.Namespace) -> int:
     payload = {"name": "letterboxd-cli", "command": "lbd", "version": __version__}
     if args.format == "json":
@@ -684,86 +624,6 @@ def cmd_version(db: sqlite3.Connection | None, args: argparse.Namespace) -> int:
     else:
         print(f"lbd {__version__}")
     return 0
-
-
-def ensure_schema(db: sqlite3.Connection) -> None:
-    db.executescript(
-        """
-        PRAGMA journal_mode = WAL;
-
-        CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            kind TEXT NOT NULL,
-            name TEXT,
-            year INTEGER,
-            letterboxd_uri TEXT,
-            rating REAL,
-            date TEXT,
-            watched_date TEXT,
-            rewatch INTEGER,
-            tags TEXT,
-            review TEXT,
-            like INTEGER,
-            url TEXT,
-            source_file TEXT,
-            source_path TEXT,
-            row_hash TEXT NOT NULL,
-            raw_json TEXT NOT NULL,
-            search_text TEXT NOT NULL,
-            imported_at TEXT NOT NULL,
-            UNIQUE(kind, source_file, row_hash)
-        );
-
-        CREATE TABLE IF NOT EXISTS import_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_path TEXT NOT NULL,
-            imported_at TEXT NOT NULL,
-            rows_imported INTEGER NOT NULL,
-            files_imported INTEGER NOT NULL
-        );
-        """
-    )
-    migrate_schema(db)
-    db.executescript(
-        f"""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_unique_source
-            ON entries(kind, source_file, row_hash);
-
-        CREATE INDEX IF NOT EXISTS idx_entries_kind ON entries(kind);
-        CREATE INDEX IF NOT EXISTS idx_entries_name ON entries(name);
-        CREATE INDEX IF NOT EXISTS idx_entries_year ON entries(year);
-        CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
-        CREATE INDEX IF NOT EXISTS idx_entries_rating ON entries(rating);
-        CREATE INDEX IF NOT EXISTS idx_entries_search ON entries(search_text);
-
-        PRAGMA user_version = {SCHEMA_VERSION};
-        """
-    )
-
-
-def migrate_schema(db: sqlite3.Connection) -> None:
-    existing = {row["name"] for row in db.execute("PRAGMA table_info(entries)").fetchall()}
-    for column, ddl in ENTRY_COLUMN_MIGRATIONS.items():
-        if column not in existing:
-            db.execute(f"ALTER TABLE entries ADD COLUMN {ddl}")
-
-    db.execute("UPDATE entries SET imported_at = ? WHERE imported_at IS NULL OR imported_at = ''", (now_iso(),))
-    db.execute("UPDATE entries SET raw_json = '{}' WHERE raw_json IS NULL OR raw_json = ''")
-    db.execute(
-        """
-        UPDATE entries
-        SET search_text = lower(
-            coalesce(kind, '') || ' ' ||
-            coalesce(name, '') || ' ' ||
-            coalesce(year, '') || ' ' ||
-            coalesce(tags, '') || ' ' ||
-            coalesce(review, '') || ' ' ||
-            coalesce(url, '')
-        )
-        WHERE search_text IS NULL OR search_text = ''
-        """
-    )
-    db.execute("UPDATE entries SET row_hash = 'migrated:' || id WHERE row_hash IS NULL OR row_hash = ''")
 
 
 def cmd_load(db: sqlite3.Connection, args: argparse.Namespace) -> int:
@@ -1156,102 +1016,6 @@ def cmd_sql(db: sqlite3.Connection, args: argparse.Namespace) -> int:
     return print_generic_rows(rows, args.format, columns)
 
 
-def cmd_auth_save(db: sqlite3.Connection, args: argparse.Namespace) -> int:
-    cookie = validate_cookie_header(args.cookie)
-    if not is_letterboxd_origin(args.base_url):
-        raise ValueError("Refusing to save a Letterboxd session for a non-Letterboxd base URL.")
-    session_file = Path(args.session_file).expanduser()
-    data = {
-        "base_url": args.base_url.rstrip("/"),
-        "cookie": cookie,
-        "saved_at": now_iso(),
-    }
-    write_private_json(session_file, data)
-    print(f"Saved Letterboxd session to {session_file}.")
-    return 0
-
-
-def cmd_login(db: sqlite3.Connection, args: argparse.Namespace) -> int:
-    cookie = None if args.browser else args.cookie
-    clipboard_error = None
-    browser_source = None
-    username = None
-    if args.browser:
-        sources = load_browser_cookie_sources(args.browser, profile=args.browser_profile)
-        if not sources:
-            target = "installed browsers" if args.browser == "auto" else args.browser
-            raise ValueError(f"No signed-in Letterboxd cookies found in {target}.")
-        if args.no_verify:
-            browser_source = sources[0]
-            cookie = browser_source.cookie_header
-        else:
-            for source in sources:
-                candidate_username = detect_username(LetterboxdWebClient(args.base_url, source.cookie_header))
-                if candidate_username:
-                    browser_source = source
-                    cookie = source.cookie_header
-                    username = candidate_username
-                    break
-            if not cookie:
-                raise ValueError(
-                    "Found Letterboxd browser cookies, but Letterboxd did not accept any of them as signed in."
-                )
-    if not cookie and not args.no_input and not sys.stdin.isatty():
-        cookie = sys.stdin.read()
-    if not cookie and not args.no_input:
-        clipboard_cookie = read_clipboard()
-        if clipboard_cookie:
-            try:
-                cookie = validate_cookie_header(clipboard_cookie)
-            except ValueError as exc:
-                clipboard_error = exc
-    if not cookie:
-        if args.no_input:
-            raise ValueError("No cookie provided. Pass --cookie when --no-input is set.")
-        if clipboard_error:
-            raise ValueError(f"Clipboard did not contain a valid Cookie header: {clipboard_error}")
-        raise ValueError("Copy the Cookie header, then run lbd login or pass --cookie.")
-    cookie = validate_cookie_header(cookie)
-    if not args.no_verify:
-        username = username or detect_username(LetterboxdWebClient(args.base_url, cookie))
-        if not username:
-            raise ValueError(
-                "Letterboxd did not accept that Cookie header as a signed-in session. "
-                "Copy the Request Headers > Cookie value from a signed-in letterboxd.com page, "
-                "or pass --no-verify to save without checking."
-            )
-    args.cookie = cookie
-    status = cmd_auth_save(db, args)
-    if browser_source:
-        print(f"Imported Letterboxd cookies from {browser_source.browser} profile {browser_source.profile}.")
-    if username:
-        print(f"Verified signed-in session as {username}.")
-    return status
-
-
-def cmd_auth_status(db: sqlite3.Connection, args: argparse.Namespace) -> int:
-    client = LetterboxdWebClient.from_args(args)
-    username = detect_username(client)
-    if args.format == "json":
-        print(json.dumps({"signed_in": bool(username), "username": username}, indent=2))
-        return 0 if username else 1
-    if username:
-        print(f"Signed in as {username}.")
-        return 0
-    print("No signed-in Letterboxd session detected.")
-    return 1
-
-
-def cmd_auth_clear(db: sqlite3.Connection, args: argparse.Namespace) -> int:
-    session_file = Path(args.session_file).expanduser()
-    if session_file.exists():
-        session_file.unlink()
-        print(f"Deleted {session_file}.")
-    else:
-        print("No saved session file found.")
-    return 0
-
-
 def cmd_web_get(db: sqlite3.Connection, args: argparse.Namespace) -> int:
     client = LetterboxdWebClient.from_args(args)
     response = client.get(args.path)
@@ -1572,30 +1336,6 @@ def cmd_live_sync(db: sqlite3.Connection, args: argparse.Namespace) -> int:
     return 0
 
 
-def read_csv_sources(path: Path) -> Iterable[CsvSource]:
-    resolved = str(path.resolve())
-    if path.is_file() and path.suffix.lower() == ".zip":
-        with zipfile.ZipFile(path) as bundle:
-            for info in bundle.infolist():
-                if info.is_dir() or not info.filename.lower().endswith(".csv"):
-                    continue
-                with bundle.open(info) as handle:
-                    text = decode_csv_bytes(handle.read())
-                yield CsvSource(Path(info.filename).name, resolved, text)
-        return
-
-    if path.is_file() and path.suffix.lower() == ".csv":
-        yield CsvSource(path.name, resolved, decode_csv_bytes(path.read_bytes()))
-        return
-
-    if path.is_dir():
-        for csv_path in sorted(path.rglob("*.csv")):
-            yield CsvSource(csv_path.name, resolved, decode_csv_bytes(csv_path.read_bytes()))
-        return
-
-    raise ValueError("Expected a .zip file, .csv file, or folder containing CSV files.")
-
-
 def parse_key_values(values: list[str]) -> dict[str, str]:
     parsed = {}
     for value in values:
@@ -1604,15 +1344,6 @@ def parse_key_values(values: list[str]) -> dict[str, str]:
         key, item = value.split("=", 1)
         parsed[key] = item
     return parsed
-
-
-def parse_web_person(body: str) -> dict[str, Any]:
-    logged_in = bool(re.search(r"\bloggedIn:\s*true\b", body))
-    username_match = re.search(r"\busername:\s*['\"]([^'\"]+)['\"]", body)
-    return {
-        "logged_in": logged_in,
-        "username": html.unescape(username_match.group(1)) if username_match else None,
-    }
 
 
 def extract_csrf(body: str) -> str | None:
@@ -1664,35 +1395,6 @@ def watchlist_action_for(film: dict[str, Any], action: str) -> str:
             if old in add_action:
                 return add_action.replace(old, new)
     return f"/film/{slug}/remove-from-watchlist/"
-
-
-def detect_username(client: LetterboxdWebClient) -> str | None:
-    cookie_username = username_from_cookie(client.cookie)
-    status = parse_web_person(client.get("/").text)
-    username = status.get("username")
-    if status.get("logged_in") and username:
-        return str(username)
-
-    if cookie_username:
-        settings = client.get("/settings/")
-        if settings.status < 400 and (
-            "Account Settings" in settings.text
-            or f"/{cookie_username}/" in settings.text
-            or cookie_username in settings.text
-        ):
-            return cookie_username
-    return None
-
-
-def username_from_cookie(cookie: str | None) -> str | None:
-    if not cookie:
-        return None
-    for part in cookie.split(";"):
-        part = part.strip()
-        if part.startswith("letterboxd.signed.in.as="):
-            value = part.split("=", 1)[1].strip()
-            return urllib.parse.unquote(value) if value else None
-    return None
 
 
 def warn_cache_read(command: str) -> None:
@@ -2389,136 +2091,6 @@ def slugify_person_name(value: str) -> str:
     if not text:
         raise ValueError("Provide a person name or Letterboxd contributor path.")
     return text
-
-
-def filters_from_args(args: argparse.Namespace) -> LetterboxdFilters:
-    year = getattr(args, "year", None)
-    decade = normalize_decade(getattr(args, "decade", None))
-    if year and decade:
-        raise ValueError("Use either --year or --decade, not both.")
-    sort = getattr(args, "sort", "popular") or "popular"
-    if sort not in LETTERBOXD_SORTS:
-        sort = "popular"
-    return LetterboxdFilters(
-        year=year,
-        decade=decade,
-        genres=tuple(normalize_filter_values(getattr(args, "genre", []), allow_negative=False)),
-        exclude_genres=tuple(normalize_filter_values(getattr(args, "exclude_genre", []), allow_negative=False)),
-        raw_segments=tuple(normalize_raw_filter_segments(getattr(args, "filter", []))),
-        sort=sort,
-    )
-
-
-def filters_have_values(filters: LetterboxdFilters) -> bool:
-    return bool(filters.year or filters.decade or filters.genres or filters.exclude_genres or filters.raw_segments)
-
-
-def normalize_filter_values(values: list[str], *, allow_negative: bool) -> list[str]:
-    normalized = []
-    for value in values or []:
-        for part in str(value).split(","):
-            text = slugify_filter_token(part)
-            if not text:
-                continue
-            if text.startswith("-") and not allow_negative:
-                text = text[1:]
-            normalized.append(text)
-    return normalized
-
-
-def slugify_filter_token(value: str) -> str:
-    text = value.strip().casefold()
-    text = re.sub(r"['’]", "", text)
-    text = re.sub(r"[^a-z0-9+-]+", "-", text)
-    text = re.sub(r"-+", "-", text).strip("-")
-    return text
-
-
-def normalize_raw_filter_segments(values: list[str]) -> list[str]:
-    segments = []
-    for value in values or []:
-        text = str(value).strip().strip("/")
-        if not text:
-            continue
-        if "://" in text or ".." in text or "?" in text or "#" in text:
-            raise ValueError(f"Unsafe Letterboxd filter segment: {value!r}.")
-        parts = [slugify_filter_token(part) for part in text.split("/") if part.strip()]
-        if not parts:
-            continue
-        segments.append("/".join(parts))
-    return segments
-
-
-def normalize_decade(value: str | None) -> str | None:
-    if not value:
-        return None
-    text = str(value).strip().casefold()
-    match = re.fullmatch(r"(\d{4})s?", text)
-    if not match:
-        raise ValueError("Decade should look like 1990s or 1990.")
-    decade = int(match.group(1))
-    if decade % 10:
-        decade = (decade // 10) * 10
-    return f"{decade}s"
-
-
-def letterboxd_filter_segments(filters: LetterboxdFilters, *, include_sort: bool) -> list[str]:
-    segments: list[str] = []
-    if include_sort:
-        segments.extend(LETTERBOXD_SORTS.get(filters.sort, "popular").split("/"))
-    if filters.year:
-        segments.extend(["year", str(filters.year)])
-    elif filters.decade:
-        segments.extend(["decade", filters.decade])
-    if filters.genres or filters.exclude_genres:
-        genre_values = [*filters.genres, *(f"-{genre}" for genre in filters.exclude_genres)]
-        segments.extend(["genre", "+".join(genre_values)])
-    for raw in filters.raw_segments:
-        segments.extend(part for part in raw.split("/") if part)
-    return segments
-
-
-def filtered_path(base: str, filters: LetterboxdFilters, page: int, *, global_browser: bool) -> str:
-    if global_browser:
-        segments = letterboxd_filter_segments(filters, include_sort=True)
-        path = "/csi/films/films-browser-list/" + "/".join(segments).strip("/") + "/"
-        if page > 1:
-            path += f"page/{page}/"
-        return path + "?esiAllowFilters=true"
-
-    base_path = normalize_letterboxd_path(base)
-    include_sort = getattr(filters, "sort", "popular") != "popular"
-    segments = letterboxd_filter_segments(filters, include_sort=include_sort)
-    path = base_path.rstrip("/") + "/"
-    if segments:
-        path += "/".join(segments).strip("/") + "/"
-    if page > 1:
-        path += f"page/{page}/"
-    return path
-
-
-def normalize_letterboxd_path(value: str) -> str:
-    text = value.strip()
-    parsed = urllib.parse.urlparse(text)
-    path = parsed.path if parsed.scheme else text
-    path = "/" + path.strip("/") + "/"
-    if "://" in path or ".." in path or "?" in path or "#" in path:
-        raise ValueError(f"Unsafe Letterboxd path: {value!r}.")
-    return path
-
-
-def is_global_films_base(value: str) -> bool:
-    return normalize_letterboxd_path(value) == "/films/"
-
-
-def looks_like_letterboxd_film_set(value: str) -> bool:
-    if not value:
-        return False
-    try:
-        path = normalize_letterboxd_path(value)
-    except ValueError:
-        return False
-    return any(part in path for part in ("/list/", "/watchlist/", "/films/", "/actor/", "/director/", "/writer/"))
 
 
 def fetch_filtered_films(
@@ -3322,260 +2894,6 @@ def absolute_url(value: str | None) -> str | None:
     return absolute_letterboxd_url(value)
 
 
-def decode_csv_bytes(data: bytes) -> str:
-    if data.startswith(b"\xef\xbb\xbf"):
-        return data.decode("utf-8-sig")
-    return data.decode("utf-8")
-
-
-def normalize_csv_row(row: dict[str, str], source: CsvSource) -> dict[str, Any]:
-    keyed = {key_for(k): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
-    kind = infer_kind(source.name, keyed)
-    name = first_value(keyed, "name", "title", "film", "filmname")
-    raw_year = first_value(keyed, "year", "released", "releaseyear")
-    rating = parse_rating(first_value(keyed, "rating", "rating10"))
-    watched_date = first_value(keyed, "watcheddate", "datewatched")
-    row_date = first_value(keyed, "date", "created", "published", "addeddate")
-    review = first_value(keyed, "review", "body", "text", "notes", "note")
-
-    if "rating10" in keyed and "rating" not in keyed:
-        rating = parse_rating10(keyed.get("rating10"))
-
-    data = {
-        "kind": kind,
-        "name": name,
-        "year": parse_int(raw_year),
-        "letterboxd_uri": first_value(keyed, "letterboxduri", "url", "uri"),
-        "rating": rating,
-        "date": normalize_date(row_date or watched_date),
-        "watched_date": normalize_date(watched_date),
-        "rewatch": parse_bool(first_value(keyed, "rewatch", "rewatched")),
-        "tags": first_value(keyed, "tags", "tag"),
-        "review": review,
-        "like": parse_bool(first_value(keyed, "like", "liked")),
-        "url": first_value(keyed, "letterboxduri", "url", "uri"),
-        "source_file": source.name,
-        "source_path": source.source_path,
-        "raw_json": json.dumps(row, ensure_ascii=False, sort_keys=True),
-    }
-    data["row_hash"] = row_hash(data["raw_json"])
-    data["search_text"] = build_search_text(data)
-    data["imported_at"] = now_iso()
-    data["_provenance"] = {
-        "source": "export",
-        "imported_at": data["imported_at"],
-        "source_file": source.name,
-        "source_path": source.source_path,
-    }
-    return data
-
-
-def infer_kind(file_name: str, keyed: dict[str, str]) -> str:
-    stem = Path(file_name).stem.lower()
-    if stem in ("diary", "watched", "watchlist", "ratings", "reviews", "likes"):
-        return KIND_ALIASES.get(stem, stem)
-    if "watcheddate" in keyed:
-        return "diary"
-    if "review" in keyed:
-        return "review"
-    if "rating" in keyed:
-        return "rating"
-    return stem or "csv"
-
-
-def insert_entry(db: sqlite3.Connection, data: dict[str, Any]) -> None:
-    db.execute(
-        """
-        INSERT OR REPLACE INTO entries(
-            kind, name, year, letterboxd_uri, rating, date, watched_date, rewatch,
-            tags, review, like, url, source_file, source_path, row_hash, raw_json,
-            search_text, imported_at
-        )
-        VALUES (
-            :kind, :name, :year, :letterboxd_uri, :rating, :date, :watched_date,
-            :rewatch, :tags, :review, :like, :url, :source_file, :source_path,
-            :row_hash, :raw_json, :search_text, :imported_at
-        )
-        """,
-        data,
-    )
-
-
-def select_entries(
-    db: sqlite3.Connection,
-    args: argparse.Namespace,
-    *,
-    kind: str | None = None,
-    text: str | None = None,
-) -> list[sqlite3.Row]:
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    kind = KIND_ALIASES.get(kind or "", kind)
-    if kind == "history":
-        clauses.append("kind IN ('diary', 'watched')")
-    elif kind == "rating":
-        clauses.append("(kind = 'rating' OR rating IS NOT NULL)")
-    elif kind == "review":
-        clauses.append("(kind = 'review' OR COALESCE(review, '') != '')")
-    elif kind:
-        clauses.append("kind = ?")
-        params.append(kind)
-
-    query_text = text or getattr(args, "query", None)
-    if query_text:
-        clauses.append("search_text LIKE ?")
-        params.append(f"%{query_text.casefold()}%")
-
-    if getattr(args, "year", None) is not None:
-        clauses.append("year = ?")
-        params.append(args.year)
-
-    if getattr(args, "from_date", None):
-        clauses.append("COALESCE(watched_date, date) >= ?")
-        params.append(args.from_date)
-
-    if getattr(args, "to_date", None):
-        clauses.append("COALESCE(watched_date, date) <= ?")
-        params.append(args.to_date)
-
-    if getattr(args, "min_rating", None) is not None:
-        clauses.append("rating >= ?")
-        params.append(args.min_rating)
-
-    if getattr(args, "max_rating", None) is not None:
-        clauses.append("rating <= ?")
-        params.append(args.max_rating)
-
-    sort = getattr(args, "sort", "date")
-    order_by = {
-        "date": "COALESCE(watched_date, date)",
-        "rating": "rating",
-        "title": "name",
-        "year": "year",
-        "kind": "kind",
-    }[sort]
-    direction = "DESC" if getattr(args, "desc", False) else "ASC"
-    limit = max(1, int(getattr(args, "limit", 50) or 50))
-
-    sql = "SELECT * FROM entries"
-    if clauses:
-        sql += " WHERE " + " AND ".join(clauses)
-    sql += f" ORDER BY {order_by} {direction}, id {direction} LIMIT ?"
-    params.append(limit)
-    return db.execute(sql, params).fetchall()
-
-
-def fetch_url(url: str) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        headers = getattr(response, "headers", None)
-        charset = headers.get_content_charset() if hasattr(headers, "get_content_charset") else None
-        charset = charset or "utf-8"
-        return response.read().decode(charset, errors="replace")
-
-
-def parse_rss(body: str, source_url: str) -> list[dict[str, Any]]:
-    root = ElementTree.fromstring(body)
-    channel_items = root.findall("./channel/item")
-    atom_items = root.findall("{http://www.w3.org/2005/Atom}entry")
-    rows = []
-
-    for item in channel_items:
-        title = child_text(item, "title")
-        link = child_text(item, "link")
-        guid = child_text(item, "guid") or link or title
-        description = clean_html(child_text(item, "description"))
-        published = normalize_feed_date(child_text(item, "pubDate"))
-        row = feed_row(guid, title, link, description, published, source_url)
-        rows.append(row)
-
-    for item in atom_items:
-        title = namespaced_child_text(item, "title")
-        link_el = item.find("{http://www.w3.org/2005/Atom}link")
-        link = link_el.attrib.get("href") if link_el is not None else ""
-        guid = namespaced_child_text(item, "id") or link or title
-        summary = clean_html(namespaced_child_text(item, "summary") or namespaced_child_text(item, "content"))
-        published = normalize_feed_date(
-            namespaced_child_text(item, "published") or namespaced_child_text(item, "updated")
-        )
-        rows.append(feed_row(guid, title, link, summary, published, source_url))
-
-    return rows
-
-
-def feed_row(
-    guid: str,
-    title: str,
-    link: str,
-    description: str,
-    published: str | None,
-    source_url: str,
-) -> dict[str, Any]:
-    name, year = parse_feed_title(title)
-    raw = {
-        "guid": guid,
-        "title": title,
-        "link": link,
-        "description": description,
-        "published": published,
-    }
-    data = {
-        "kind": "feed",
-        "name": name or title,
-        "year": year,
-        "letterboxd_uri": link,
-        "rating": parse_rating_from_text(description),
-        "date": published,
-        "watched_date": None,
-        "rewatch": None,
-        "tags": None,
-        "review": description,
-        "like": None,
-        "url": link,
-        "source_file": source_url,
-        "source_path": source_url,
-        "row_hash": row_hash(guid or json.dumps(raw, sort_keys=True)),
-        "raw_json": json.dumps(raw, ensure_ascii=False, sort_keys=True),
-        "imported_at": now_iso(),
-    }
-    data["search_text"] = build_search_text(data)
-    data["_provenance"] = {
-        "source": "rss",
-        "fetched_at": data["imported_at"],
-        "source_url": source_url,
-    }
-    return data
-
-
-def parse_feed_title(title: str) -> tuple[str | None, int | None]:
-    cleaned = re.sub(r"\s+", " ", title or "").strip()
-    for marker in (" watched ", " reviewed ", " liked ", " rated ", " added "):
-        marker_match = re.search(marker, f" {cleaned} ", flags=re.IGNORECASE)
-        if marker_match:
-            cleaned = f" {cleaned} "[marker_match.end() :].strip()
-            break
-
-    match = re.search(r"(.+?)\s+\((\d{4})\)", cleaned)
-    if match:
-        return match.group(1).strip(), int(match.group(2))
-    match = re.search(r"(.+?),\s*(\d{4})(?:\s|$)", cleaned)
-    if match:
-        return match.group(1).strip(), int(match.group(2))
-    return cleaned or None, None
-
-
-def parse_rating_from_text(value: str) -> float | None:
-    if not value:
-        return None
-    star_count = value.count("★")
-    half = "½" in value
-    if star_count or half:
-        return star_count + (0.5 if half else 0)
-    match = re.search(r"\b([0-5](?:\.5)?)\s*/\s*5\b", value)
-    return float(match.group(1)) if match else None
-
-
 def print_rows(rows: Iterable[sqlite3.Row], output_format: str) -> int:
     materialized = [public_display_row(dict(row)) for row in rows]
     columns = ["source", "kind", "name", "year", "rating", "date", "watched_date", "tags", "review", "url"]
@@ -3800,95 +3118,8 @@ def print_table(rows: list[dict[str, str]], columns: list[str]) -> None:
         print("  ".join(str(row.get(column, ""))[: widths[column]].ljust(widths[column]) for column in columns))
 
 
-def key_for(value: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", value.casefold())
-
-
-def first_value(mapping: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = mapping.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return None
-
-
-def parse_int(value: str | None) -> int | None:
-    if value in (None, ""):
-        return None
-    match = re.search(r"\d{4}", str(value))
-    return int(match.group(0)) if match else None
-
-
-def parse_rating(value: str | None) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return float(str(value).strip())
-    except ValueError:
-        return parse_rating_from_text(str(value))
-
-
-def parse_rating10(value: str | None) -> float | None:
-    rating = parse_rating(value)
-    if rating is None:
-        return None
-    return rating / 2
-
-
-def parse_bool(value: str | None) -> int | None:
-    if value in (None, ""):
-        return None
-    normalized = str(value).strip().casefold()
-    if normalized in {"true", "yes", "y", "1", "liked"}:
-        return 1
-    if normalized in {"false", "no", "n", "0"}:
-        return 0
-    return None
-
-
-def normalize_date(value: str | None) -> str | None:
-    if value in (None, ""):
-        return None
-    text = str(value).strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
-        return text
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%d %b %Y", "%b %d, %Y", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(text, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return text
-
-
-def normalize_feed_date(value: str | None) -> str | None:
-    if not value:
-        return None
-    text = value.strip()
-    for fmt in (
-        "%a, %d %b %Y %H:%M:%S %z",
-        "%a, %d %b %Y %H:%M:%S %Z",
-        "%Y-%m-%dT%H:%M:%S%z",
-        "%Y-%m-%dT%H:%M:%SZ",
-    ):
-        try:
-            return datetime.strptime(text, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return normalize_date(text)
-
-
 def split_tags(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
-
-
-def child_text(parent: ElementTree.Element, tag: str) -> str:
-    child = parent.find(tag)
-    return child.text.strip() if child is not None and child.text else ""
-
-
-def namespaced_child_text(parent: ElementTree.Element, tag: str) -> str:
-    child = parent.find(f"{{http://www.w3.org/2005/Atom}}{tag}")
-    return child.text.strip() if child is not None and child.text else ""
 
 
 def clean_html(value: str) -> str:
@@ -3896,17 +3127,6 @@ def clean_html(value: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def row_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def build_search_text(data: dict[str, Any]) -> str:
-    return " ".join(
-        str(data.get(key) or "")
-        for key in ("kind", "name", "year", "rating", "date", "watched_date", "tags", "review", "url")
-    ).casefold()
 
 
 def title_with_year(name: str | None, year: int | None) -> str:
@@ -3923,11 +3143,3 @@ def format_rating(value: Any) -> str:
 def truncate(value: str, width: int) -> str:
     value = re.sub(r"\s+", " ", value).strip()
     return textwrap.shorten(value, width=width, placeholder="...") if len(value) > width else value
-
-
-def now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def today_iso() -> str:
-    return datetime.now().date().isoformat()
