@@ -3,12 +3,21 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from letterboxd_cli.cli import build_parser
+
+
+DOC_WIDTH = 120
+
+
+class StableHelpFormatter(argparse.HelpFormatter):
+    def __init__(self, prog: str) -> None:
+        super().__init__(prog, width=DOC_WIDTH, max_help_position=28)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     parser = build_parser()
+    configure_formatters(parser)
     output_path = Path(argv[0])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(render_command_docs(parser), encoding="utf-8")
@@ -89,7 +99,32 @@ def help_text(parser: argparse.ArgumentParser) -> str:
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         parser.print_help()
-    return buffer.getvalue()
+    return normalize_help_text(buffer.getvalue())
+
+
+def configure_formatters(parser: argparse.ArgumentParser) -> None:
+    parser.formatter_class = StableHelpFormatter
+    for _, subparser in iter_commands(parser):
+        subparser.formatter_class = StableHelpFormatter
+
+
+def normalize_help_text(text: str) -> str:
+    # Python 3.13 changed how argparse renders options with both long and short
+    # forms. Keep generated docs stable across the supported Python matrix.
+    text = re.sub(r"--([a-z0-9][a-z0-9-]*) ([A-Z][A-Z0-9_-]*), -([a-z]) \2", r"--\1, -\3 \2", text)
+    text = re.sub(r"(\{[^\n{}]+\})\n(\s+)\.\.\.", r"\1 ...", text)
+    return re.sub(
+        r"^(  --[a-z0-9][a-z0-9-]*, -[a-z] [A-Z][A-Z0-9_-]*)(\s+)(\S.*)$",
+        align_option_description,
+        text,
+        flags=re.MULTILINE,
+    )
+
+
+def align_option_description(match: re.Match[str]) -> str:
+    option = match.group(1)
+    description = match.group(3)
+    return f"{option}{' ' * max(1, 28 - len(option))}{description}"
 
 
 if __name__ == "__main__":
