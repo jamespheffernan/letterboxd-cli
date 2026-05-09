@@ -896,6 +896,7 @@ def cmd_query(db: sqlite3.Connection, args: argparse.Namespace) -> int:
                 limit=args.limit,
                 hydrate=args.hydrate,
             )
+        live_rows = overlay_cached_account_state(db, live_rows)
         if args.save:
             for row in live_rows:
                 insert_entry(db, row)
@@ -1056,6 +1057,7 @@ def cmd_films(db: sqlite3.Connection, args: argparse.Namespace) -> int:
         hydrate=args.hydrate,
         query=args.query,
     )
+    rows = overlay_cached_account_state(db, rows)
     if args.save:
         for row in rows:
             insert_entry(db, row)
@@ -1112,6 +1114,7 @@ def cmd_person(db: sqlite3.Connection, args: argparse.Namespace) -> int:
         hydrate=args.hydrate,
         filters=filters_from_args(args),
     )
+    rows = overlay_cached_account_state(db, rows)
     if args.save:
         for row in rows:
             insert_entry(db, row)
@@ -1421,6 +1424,7 @@ def cmd_live_search(db: sqlite3.Connection, args: argparse.Namespace) -> int:
             limit=args.limit,
             hydrate=args.hydrate,
         )
+    rows = overlay_cached_account_state(db, rows)
     if args.save:
         for row in rows:
             insert_entry(db, row)
@@ -1443,6 +1447,7 @@ def cmd_live_collection(db: sqlite3.Connection, args: argparse.Namespace) -> int
         pages=args.pages,
         filters=filters_from_args(args),
     )[: max(1, args.limit)]
+    rows = overlay_cached_account_state(db, rows)
     if args.save:
         for row in rows:
             insert_entry(db, row)
@@ -2172,6 +2177,133 @@ def dedupe_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         deduped.append(row)
     return deduped
+
+
+ACCOUNT_STATE_FIELDS = ("rating", "date", "watched_date", "rewatch", "tags", "review", "like")
+
+
+def overlay_cached_account_state(db: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    materialized = [dict(row) for row in rows]
+    if not materialized:
+        return materialized
+
+    state_index = cached_account_state_index(db)
+    if not state_index:
+        return materialized
+
+    enriched = []
+    for row in materialized:
+        state = lookup_cached_account_state(state_index, row)
+        enriched.append(apply_cached_account_state(row, state) if state else row)
+    return enriched
+
+
+def cached_account_state_index(db: sqlite3.Connection) -> dict[tuple[str, str], dict[str, Any]]:
+    rows = db.execute(
+        """
+        SELECT *
+        FROM entries
+        WHERE rating IS NOT NULL
+           OR date IS NOT NULL
+           OR watched_date IS NOT NULL
+           OR rewatch IS NOT NULL
+           OR COALESCE(tags, '') != ''
+           OR COALESCE(review, '') != ''
+           OR like IS NOT NULL
+        ORDER BY COALESCE(watched_date, date, imported_at, '') DESC, id DESC
+        """
+    ).fetchall()
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        state = {field: row[field] for field in ACCOUNT_STATE_FIELDS if cached_value_present(row[field])}
+        if not state:
+            continue
+        for key in cached_account_state_keys(row):
+            existing = index.setdefault(key, {})
+            for field, value in state.items():
+                existing.setdefault(field, value)
+    return index
+
+
+def lookup_cached_account_state(
+    index: dict[tuple[str, str], dict[str, Any]],
+    row: dict[str, Any],
+) -> dict[str, Any] | None:
+    for key in cached_account_state_keys(row):
+        if key in index:
+            return index[key]
+    return None
+
+
+def cached_account_state_keys(row: dict[str, Any] | sqlite3.Row) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    slug = film_slug(str(row_value(row, "url") or row_value(row, "letterboxd_uri") or ""))
+    if slug:
+        keys.append(("slug", slug))
+    title = normalized_title_key(row_value(row, "name"), row_value(row, "year"))
+    if title:
+        keys.append(("title", title))
+    return keys
+
+
+def normalized_title_key(name: Any, year: Any) -> str | None:
+    title = re.sub(r"\s+", " ", str(name or "").strip()).casefold()
+    if not title:
+        return None
+    return f"{title}\0{year or ''}"
+
+
+def row_value(row: dict[str, Any] | sqlite3.Row, key: str) -> Any:
+    return row[key] if isinstance(row, sqlite3.Row) else row.get(key)
+
+
+def apply_cached_account_state(row: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    changed: dict[str, Any] = {}
+    for field in ACCOUNT_STATE_FIELDS:
+        if field not in state:
+            continue
+        current = row.get(field)
+        cached = state[field]
+        if should_apply_cached_value(field, current, cached):
+            row[field] = cached
+            changed[field] = cached
+
+    if not changed:
+        return row
+
+    raw = parse_row_raw_json(row)
+    raw["cached_account_state"] = changed
+    row["raw_json"] = json.dumps(raw, ensure_ascii=False, sort_keys=True)
+    existing_provenance = row.get("_provenance")
+    provenance = dict(existing_provenance) if isinstance(existing_provenance, dict) else {}
+    provenance["account_state_source"] = "cache"
+    provenance["account_state_fields"] = sorted(changed)
+    row["_provenance"] = provenance
+    row["row_hash"] = row_hash(row["raw_json"])
+    row["search_text"] = build_search_text(row)
+    return row
+
+
+def parse_row_raw_json(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        raw = json.loads(str(row.get("raw_json") or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def should_apply_cached_value(field: str, current: Any, cached: Any) -> bool:
+    if not cached_value_present(cached):
+        return False
+    if field == "review" and isinstance(current, str) and current.startswith("Directed by "):
+        return True
+    if field == "like":
+        return current is None and cached_value_present(cached)
+    return not cached_value_present(current)
+
+
+def cached_value_present(value: Any) -> bool:
+    return value is not None and value != ""
 
 
 def print_rows(rows: Iterable[sqlite3.Row], output_format: str) -> int:

@@ -896,6 +896,76 @@ def test_live_watchlist_fetches_and_saves_page_rows(tmp_path: Path, monkeypatch,
     assert count == 2
 
 
+def test_live_ratings_parse_poster_viewingdata_and_save_account_state(tmp_path: Path, monkeypatch, capsys):
+    db = tmp_path / "lbd.sqlite3"
+    html = """
+    <html><body>
+      <div class="react-component"
+        data-component-class="LazyPoster"
+        data-item-name="The Grand Budapest Hotel (2014)"
+        data-item-slug="the-grand-budapest-hotel"
+        data-item-link="/film/the-grand-budapest-hotel/"></div>
+      <p class="poster-viewingdata" data-item-uid="film:95113">
+        <span class="rating -micro -darker rated-10">★★★★★</span>
+        <span class="like liked-micro has-icon icon-liked icon-16"><span class="icon"></span></span>
+        <a href="/exampleuser/film/the-grand-budapest-hotel/3/" class="review-micro has-icon icon-review tooltip" title="Review"></a>
+      </p>
+    </body></html>
+    """
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __init__(self, url: str):
+            super().__init__(html.encode())
+            self.url = url
+            self.headers = {"content-type": "text/html"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=30: Response(request.full_url))
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db),
+                "live",
+                "ratings",
+                "exampleuser",
+                "--save",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    live_rows = json.loads(capsys.readouterr().out)
+    assert live_rows[0]["rating"] == 5.0
+    assert live_rows[0]["like"] == 1
+
+    with sqlite3.connect(db) as conn:
+        saved = conn.execute(
+            "SELECT rating, like, raw_json FROM entries WHERE kind = 'rating' AND name = ?",
+            ("The Grand Budapest Hotel",),
+        ).fetchone()
+
+    assert saved[0] == 5.0
+    assert saved[1] == 1
+    assert json.loads(saved[2])["poster_viewingdata"]["review_url"] == (
+        "https://letterboxd.com/exampleuser/film/the-grand-budapest-hotel/3/"
+    )
+
+    assert main(["--db", str(db), "q", "The Grand Budapest Hotel", "--local", "--format", "json"]) == 0
+    cached_rows = json.loads(capsys.readouterr().out)
+    assert cached_rows[0]["rating"] == 5.0
+    assert cached_rows[0]["like"] == 1
+
+
 def test_live_me_detects_signed_in_username(tmp_path: Path, monkeypatch, capsys):
     db = tmp_path / "lbd.sqlite3"
     html = "person = { username: \"exampleuser\", loggedIn: true };"
@@ -1227,6 +1297,103 @@ def test_query_defaults_to_live_and_marks_provenance(tmp_path: Path, monkeypatch
     out = capsys.readouterr().out
     assert seen["url"] == "https://letterboxd.com/s/search/heat/"
     assert '"source": "live"' in out
+
+
+def test_live_query_overlays_cached_account_state(tmp_path: Path, monkeypatch, capsys):
+    db = tmp_path / "lbd.sqlite3"
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "reviews.csv").write_text(
+        "Date,Name,Year,Letterboxd URI,Rating,Review,Tags\n"
+        "2024-01-02,The Grand Budapest Hotel,2014,"
+        "https://letterboxd.com/film/the-grand-budapest-hotel/,4.5,Loved it,hotel\n",
+        encoding="utf-8",
+    )
+    assert main(["--db", str(db), "load", str(export)]) == 0
+    capsys.readouterr()
+
+    html = """
+    <html><body>
+      <div class="react-component"
+        data-component-class="LazyPoster"
+        data-item-name="The Grand Budapest Hotel (2014)"
+        data-item-slug="the-grand-budapest-hotel"
+        data-item-link="/film/the-grand-budapest-hotel/"></div>
+    </body></html>
+    """
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __init__(self, url: str):
+            super().__init__(html.encode())
+            self.url = url
+            self.headers = {"content-type": "text/html"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=30: Response(request.full_url))
+
+    assert main(["--db", str(db), "q", "The Grand Budapest Hotel", "--format", "json"]) == 0
+
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["source"] == "live"
+    assert rows[0]["rating"] == 4.5
+    assert rows[0]["date"] == "2024-01-02"
+    assert rows[0]["tags"] == "hotel"
+    assert rows[0]["review"] == "Loved it"
+    assert rows[0]["_provenance"]["account_state_source"] == "cache"
+
+
+def test_filtered_films_overlay_cached_account_state(tmp_path: Path, monkeypatch, capsys):
+    db = tmp_path / "lbd.sqlite3"
+    export = tmp_path / "export"
+    export.mkdir()
+    (export / "ratings.csv").write_text(
+        "Date,Name,Year,Letterboxd URI,Rating\n"
+        "2024-03-04,The Grand Budapest Hotel,2014,"
+        "https://letterboxd.com/film/the-grand-budapest-hotel/,4.0\n",
+        encoding="utf-8",
+    )
+    assert main(["--db", str(db), "load", str(export)]) == 0
+    capsys.readouterr()
+
+    html = """
+    <html><body>
+      <div class="react-component"
+        data-component-class="LazyPoster"
+        data-item-name="The Grand Budapest Hotel (2014)"
+        data-item-slug="the-grand-budapest-hotel"
+        data-item-link="/film/the-grand-budapest-hotel/"></div>
+    </body></html>
+    """
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __init__(self, url: str):
+            super().__init__(html.encode())
+            self.url = url
+            self.headers = {"content-type": "text/html"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout=30: Response(request.full_url))
+
+    assert main(["--db", str(db), "films", "/example/list/great-films/", "--format", "json"]) == 0
+
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["source"] == "live"
+    assert rows[0]["rating"] == 4.0
+    assert rows[0]["date"] == "2024-03-04"
 
 
 def test_query_live_flag_and_live_whoami_alias(tmp_path: Path, monkeypatch, capsys):

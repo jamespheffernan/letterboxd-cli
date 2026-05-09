@@ -459,7 +459,11 @@ def parse_poster_entries(body: str, *, kind: str, source_url: str) -> list[dict[
         name = html.unescape(attrs.get("data-film-name", "")).strip()
         if not name:
             continue
-        owner_rating = parse_rating10(attrs.get("data-film-owner-rating"))
+        viewing_data = parse_poster_viewing_data(body, str(match.start()), str(match.end()))
+        owner_rating = parse_rating10(attrs.get("data-film-owner-rating")) or viewing_data.get("rating")
+        raw: dict[str, Any] = dict(attrs)
+        if viewing_data:
+            raw["poster_viewingdata"] = viewing_data
         rows.append(
             live_row(
                 kind=kind,
@@ -471,7 +475,8 @@ def parse_poster_entries(body: str, *, kind: str, source_url: str) -> list[dict[
                 tags=None,
                 url=None,
                 source_url=source_url,
-                raw=attrs,
+                raw=raw,
+                like=viewing_data.get("like"),
             )
         )
 
@@ -485,7 +490,11 @@ def parse_poster_entries(body: str, *, kind: str, source_url: str) -> list[dict[
             continue
 
         title, year = split_title_year(name)
-        rating = parse_rating(attrs.get("data-owner-rating")) or parse_rating_from_attrs(attrs)
+        viewing_data = parse_poster_viewing_data(body, attrs.get("_match_start", ""), attrs.get("_match_end", ""))
+        rating = parse_rating(attrs.get("data-owner-rating")) or parse_rating_from_attrs(attrs) or viewing_data.get("rating")
+        raw = dict(attrs)
+        if viewing_data:
+            raw["poster_viewingdata"] = viewing_data
         row = live_row(
             kind=kind,
             name=title or slug.replace("-", " ").title(),
@@ -496,7 +505,8 @@ def parse_poster_entries(body: str, *, kind: str, source_url: str) -> list[dict[
             tags=None,
             url=absolute_letterboxd_url(link or f"/film/{slug}/"),
             source_url=source_url,
-            raw=attrs,
+            raw=raw,
+            like=viewing_data.get("like"),
         )
         rows.append(row)
     return dedupe_live_rows(rows)
@@ -538,6 +548,7 @@ def iter_tags_with_class(body: str, tag: str, class_name: str) -> Iterable[dict[
     for match in pattern.finditer(body):
         attrs = parse_attrs(match.group("attrs"))
         attrs["_match_start"] = str(match.start())
+        attrs["_match_end"] = str(match.end())
         yield attrs
 
 
@@ -582,6 +593,56 @@ def parse_live_date_near(body: str, start_text: str) -> str | None:
     return normalize_date(match.group(1)) if match else None
 
 
+def parse_poster_viewing_data(body: str, start_text: str, end_text: str = "") -> dict[str, Any]:
+    if not start_text.isdigit():
+        return {}
+    end = int(end_text) if end_text.isdigit() else int(start_text)
+    chunk = body[end : min(len(body), end + 1800)]
+    next_poster = next_marker_index(chunk)
+    if next_poster is not None:
+        chunk = chunk[:next_poster]
+
+    for match in re.finditer(r"<p\b(?P<attrs>[^>]*)>(?P<html>.*?)</p>", chunk, re.S):
+        attrs = parse_attrs(match.group("attrs"))
+        class_text = attrs.get("class", "")
+        if "poster-viewingdata" not in class_text.split():
+            continue
+
+        result: dict[str, Any] = {}
+        html_chunk = match.group("html")
+        rating_match = re.search(r"\brated-(\d+)\b", f"{class_text} {html_chunk}")
+        if rating_match:
+            result["rating"] = parse_rating10(rating_match.group(1))
+
+        if "liked-micro" in html_chunk or "icon-liked" in html_chunk:
+            result["like"] = 1
+
+        review_url = poster_review_url(html_chunk)
+        if review_url:
+            result["review_url"] = review_url
+        return {key: value for key, value in result.items() if value is not None}
+    return {}
+
+
+def next_marker_index(chunk: str) -> int | None:
+    markers = (
+        'data-component-class="LazyPoster"',
+        "data-component-class='LazyPoster'",
+        "film-list-entry",
+    )
+    positions = [position for marker in markers if (position := chunk.find(marker, 1)) != -1]
+    return min(positions) if positions else None
+
+
+def poster_review_url(chunk: str) -> str | None:
+    for match in re.finditer(r"<a\b(?P<attrs>[^>]*)>", chunk, re.S):
+        attrs = parse_attrs(match.group("attrs"))
+        classes = attrs.get("class", "").split()
+        if "review-micro" in classes or "icon-review" in classes:
+            return absolute_letterboxd_url(attrs.get("href"))
+    return None
+
+
 def extract_review_text(chunk: str) -> str | None:
     match = re.search(r'<div[^>]*class="[^"]*\bjs-review-body\b[^"]*"[^>]*>(.*?)</div>', chunk, re.S)
     if not match:
@@ -604,6 +665,7 @@ def live_row(
     url: str | None,
     source_url: str,
     raw: dict[str, Any],
+    like: int | None = None,
 ) -> dict[str, Any]:
     raw_json = json.dumps(raw, ensure_ascii=False, sort_keys=True)
     fetched_at = now_iso()
@@ -618,7 +680,7 @@ def live_row(
         "rewatch": None,
         "tags": tags,
         "review": review,
-        "like": None,
+        "like": like,
         "url": url,
         "source_file": source_url,
         "source_path": source_url,
