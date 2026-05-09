@@ -57,6 +57,36 @@ def test_version_matches_project_metadata():
     assert letterboxd_cli.__version__ == metadata["project"]["version"]
 
 
+def test_doctor_json_reports_missing_optional_state(tmp_path: Path, capsys):
+    db = tmp_path / "lbd.sqlite3"
+    session = tmp_path / "session.json"
+
+    assert main(["--db", str(db), "--session-file", str(session), "doctor", "--skip-network", "--format", "json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert {check["name"]: check["status"] for check in payload["checks"]} == {
+        "version": "ok",
+        "session": "warn",
+        "database": "warn",
+        "network": "warn",
+    }
+    assert not db.exists()
+
+
+def test_doctor_fails_unreadable_database(tmp_path: Path, capsys):
+    db = tmp_path / "lbd.sqlite3"
+    db.write_text("not sqlite", encoding="utf-8")
+
+    assert main(["--db", str(db), "doctor", "--skip-network", "--format", "json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert checks["database"]["status"] == "fail"
+    assert "Cannot read local database" in checks["database"]["detail"]
+
+
 def test_global_plain_prefers_parseable_csv(tmp_path: Path, capsys):
     export = tmp_path / "letterboxd.zip"
     with zipfile.ZipFile(export, "w") as bundle:

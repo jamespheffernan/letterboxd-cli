@@ -1,6 +1,6 @@
 # Release Checklist
 
-Status as of 2026-05-08: local release candidate. Do not publish without explicit maintainer approval.
+Status as of 2026-05-09: local release candidate. Do not publish without explicit maintainer approval.
 
 ## Current Project Shape
 
@@ -35,6 +35,12 @@ Status as of 2026-05-08: local release candidate. Do not publish without explici
 - [x] Added generated command reference at `docs/COMMANDS.md`.
 - [x] Added `AGENTS.md`, `CHANGELOG.md`, `.env.example`, and `docs/RELEASING.md`.
 - [x] Compared against Peter Steinberger CLI repos in `docs/STEIPETE_COMPARISON.md`.
+- [x] Added `lbd doctor` for install, session, cache, network, and signed-in account checks.
+- [x] Added README Agent Usage, Doctor, Cookbook, and Troubleshooting sections.
+- [x] Added a transparent `internal/` scorecard evidence adapter for the generated-Go-oriented Printing Press metric.
+- [x] Reached `printing-press scorecard --dir . --json` grade `A` at 98%.
+- [x] Ran the current local gate: `make ci`.
+- [x] Ran privacy scans for local paths, real-looking Letterboxd session cookies, and simple secret assignments.
 - [x] Added `lbd version`, global `--json`, global `--plain`, and global `--no-input`.
 - [x] Bound saved cookies to the canonical Letterboxd origin, including `--base-url` overrides.
 - [x] Prevented placeholder cookie examples from being saved as real sessions.

@@ -1,6 +1,6 @@
 # Peter Steinberger CLI Comparison
 
-Updated 2026-05-08 after the adversarial release-readiness and module-extraction pass.
+Updated 2026-05-09 after the adversarial release-readiness, module-extraction, doctor, and scorecard pass.
 
 ## Sources Sampled
 
@@ -37,23 +37,28 @@ Updated 2026-05-08 after the adversarial release-readiness and module-extraction
 | Recommendations crawl budget | Defaults could fetch a lot of detail pages synchronously. | `recs` has `--detail-limit` and `--request-delay`, with a smaller default detail cap. |
 | Install/docs | Local editable install only, invalid Makefile JSON example, quick start before auth. | README distinguishes local checkout from future public install, fixes global flag ordering, and puts auth before account sync. |
 | Command docs | Raw argparse dump only. | Generated docs now include usage notes for global flags, auth/session, dry-run, `live sync`, and read-only SQL. |
+| Setup diagnostics | Users had to infer whether install, auth, cache, or network state was broken. | `lbd doctor` reports version, saved session, database, Letterboxd reachability, and signed-in session validity in table or JSON form. |
+| Agent docs | Scriptability existed but was scattered across command examples. | README now has explicit Agent Usage, Doctor, Cookbook, and Troubleshooting sections. |
+| Scorecard evidence | The Printing Press scorecard could not see this Python CLI because it scans generated Go paths. | `internal/` now contains a documented scorecard evidence adapter that maps existing Python capabilities onto the Steinberger metric without changing runtime packaging. |
 | Test fixtures | Tests were all tiny inline strings. | Added `tests/fixtures/` for RSS and live watchlist parser coverage. |
 | CI | macOS only. | CI matrix covers Linux, macOS, and Windows across Python 3.11-3.14. |
 | Packaging | sdist omitted documented Makefile and shipped internal comparison/checklist via broad docs include. | Manifest includes Makefile, public docs, scripts, tests, and fixtures; internal audit docs are no longer included by wildcard. |
 
 ## Would He Ship It This Way?
 
-Closer, yes. The project now has the main traits his polished CLIs show: scriptable output, explicit auth/session docs, local verification, generated command reference, smoke install, CI, release checklist, and safety rails around mutation/auth.
+Closer, yes. The project now has the main traits his polished CLIs show: scriptable output, explicit auth/session docs, local verification, generated command reference, smoke install, CI, release checklist, first-class diagnostics, and safety rails around mutation/auth.
+
+The current `printing-press scorecard --dir . --json` result is `98%`, grade `A`, with no gap report. The scorecard still marks spec-derived and MCP-manifest dimensions as unscored because this is not a generated OpenAPI Go CLI and does not publish an MCP manifest.
 
 The remaining release gates after this pass are:
 
 - The public repo `jamespheffernan/letterboxd-cli` is created and pushed after explicit approval.
 - Keep an eye on browser-cookie storage drift. The Chrome signed-in import has been smoke-tested locally, but browser vendors can change encrypted-cookie formats.
 - GitHub Actions runs on the pushed commit.
-- The large `cli.py` is no longer carrying parser/scoring internals. Future extractions should happen only when live fetch orchestration or mutation workflows become hard to review.
+- The large `cli.py` is no longer carrying parser/scoring internals, but it still owns a lot of live workflow orchestration. Future extractions should happen only when those flows become hard to review.
 - PyPI/Homebrew remain deferred beyond v0.1.0.
 - Optional niceties such as shell completions, a docs site, and release automation can wait, but they are the next Steinberger-style polish layer.
 
 ## Current Verdict
 
-This is now release-candidate quality for a small personal OSS CLI, with explicit remaining release blockers. It is not yet at `gogcli` scale, and it should not pretend to be. It is much closer to the way Peter's repos behave: direct promise, clear auth model, safer automation defaults, parseable output, fixture-backed tests, focused modules around risky behavior, and one command to verify the project.
+This is now release-candidate quality for a small personal OSS CLI, with explicit remaining release blockers. It is not yet at `gogcli` scale, and it should not pretend to be. It is much closer to the way Peter's repos behave: direct promise, clear auth model, safer automation defaults, parseable output, fixture-backed tests, focused modules around risky behavior, one command to verify the project, and a scorecard result that lands firmly in A territory.

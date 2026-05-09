@@ -20,14 +20,16 @@ make docs
 ```text
 usage: lbd [-h] [--db DB] [--session-file SESSION_FILE] [--cookie COOKIE]
            [--base-url BASE_URL] [--json] [--plain] [--no-input] [--version]
-           {version,load,feed,login,whoami,query,q,search,watchlist,history,ratings,reviews,movie,film,watch,where-to-watch,availability,streaming,providers,cast,people,lists,person,films,recs,log,watched,diary,rate,review,heart,like,stats,export,sql,auth,web,live} ...
+           {version,doctor,load,feed,login,whoami,query,q,search,watchlist,history,ratings,reviews,movie,film,watch,where-to-watch,availability,streaming,providers,cast,people,lists,person,films,recs,log,watched,diary,rate,review,heart,like,stats,export,sql,auth,web,live} ...
 
 Search live Letterboxd, sync account sections, inspect a local SQLite cache,
 and run scriptable film workflows.
 
 positional arguments:
-  {version,load,feed,login,whoami,query,q,search,watchlist,history,ratings,reviews,movie,film,watch,where-to-watch,availability,streaming,providers,cast,people,lists,person,films,recs,log,watched,diary,rate,review,heart,like,stats,export,sql,auth,web,live}
+  {version,doctor,load,feed,login,whoami,query,q,search,watchlist,history,ratings,reviews,movie,film,watch,where-to-watch,availability,streaming,providers,cast,people,lists,person,films,recs,log,watched,diary,rate,review,heart,like,stats,export,sql,auth,web,live}
     version             Print the lbd version.
+    doctor              Check local install, session, database, and Letterboxd
+                        reachability.
     load                Load a Letterboxd export ZIP, folder, or CSV.
     feed                Fetch and store recent public RSS activity.
     login               Save your signed-in Letterboxd browser cookie.
@@ -101,6 +103,17 @@ usage: lbd version [-h] [--format {table,json}]
 options:
   -h, --help            show this help message and exit
   --format {table,json}
+```
+
+## `lbd doctor`
+
+```text
+usage: lbd doctor [-h] [--format {table,json}] [--skip-network]
+
+options:
+  -h, --help            show this help message and exit
+  --format {table,json}
+  --skip-network        Skip Letterboxd reachability and sign-in checks.
 ```
 
 ## `lbd load`

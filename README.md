@@ -273,6 +273,110 @@ lbd recs --genre crime --decade 1990s --limit 5 --format json
 lbd lists "neo noir" --strict --format json
 ```
 
+## Agent Usage
+
+Use global `--json` for structured output, `--plain` for stable line-oriented output, and `--no-input` for unattended runs where clipboard or stdin reads would be surprising.
+
+```bash
+lbd --json q "Heat" --hydrate
+lbd --json recs --genre crime --decade 1990s --limit 5
+lbd --no-input --json whoami
+```
+
+State-changing commands expose `--dry-run` so an agent can show exactly what it would send before mutating a Letterboxd account:
+
+```bash
+lbd --json web watchlist add heat-1995 --dry-run
+lbd --json diary heat-1995 --date 2026-04-24 --rating 4.5 --dry-run
+```
+
+## Doctor
+
+Run `doctor` when setup, auth, cache, or connectivity is unclear:
+
+```bash
+lbd doctor
+lbd doctor --format json
+lbd doctor --skip-network --format json
+```
+
+The check reports CLI version, saved-session state, local SQLite cache state, Letterboxd reachability, and signed-in session validity. Warnings are non-fatal; failed checks return exit code `1`.
+
+## Cookbook
+
+Import an official Letterboxd export and search it locally:
+
+```bash
+lbd load ~/Downloads/letterboxd-export.zip
+lbd q "Past Lives" --local --format json
+```
+
+Import browser cookies without copying a Cookie header:
+
+```bash
+lbd login --browser auto
+lbd whoami
+```
+
+Sync private account sections into the local cache:
+
+```bash
+lbd live sync --pages 10 --format json
+lbd watchlist --format json
+```
+
+Find highly rated crime films from the 1990s:
+
+```bash
+lbd films --genre crime --decade 1990s --sort rating --limit 10 --format json
+```
+
+Generate recommendations without using ratings as taste input:
+
+```bash
+lbd recs --genre crime --decade 2020s --no-taste-from-ratings --limit 10 --format json
+```
+
+Preview an account mutation without sending it:
+
+```bash
+lbd diary heat-1995 --date 2026-04-24 --rating 4.5 --review "Still rips." --dry-run --format json
+```
+
+Use read-only SQL for local inspection:
+
+```bash
+lbd sql "SELECT kind, COUNT(*) AS rows FROM entries GROUP BY kind" --format json
+```
+
+## Troubleshooting
+
+If `lbd login` says the cookie header is invalid, use browser import first:
+
+```bash
+lbd login --browser auto
+```
+
+If a saved session stops working, clear it and import again:
+
+```bash
+lbd auth clear
+lbd login --browser auto
+```
+
+If local results look stale, refresh signed-in sections or read live data explicitly:
+
+```bash
+lbd live sync --pages 10
+lbd q "Heat" --live --format json
+```
+
+If automation hangs waiting for input, add `--no-input` and pass the required values explicitly:
+
+```bash
+lbd --no-input login --cookie "$LETTERBOXD_COOKIE"
+```
+
 ## Data Locations
 
 Default database:

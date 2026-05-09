@@ -52,8 +52,12 @@ compile: install-dev
 docs: install-dev
 	$(PY) scripts/gen-command-docs.py docs/COMMANDS.md
 
-docs-check: docs
-	git diff --exit-code -- docs/COMMANDS.md
+docs-check: install-dev
+	set -e; \
+	tmp="$$(mktemp)"; \
+	trap 'rm -f "$$tmp"' EXIT; \
+	$(PY) scripts/gen-command-docs.py "$$tmp"; \
+	diff -u docs/COMMANDS.md "$$tmp"
 
 build: install-dev
 	$(PIP) install build

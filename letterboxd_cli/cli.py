@@ -90,6 +90,7 @@ from letterboxd_cli.web import (
     LetterboxdWebClient,
     LetterboxdWebError,
     WebResponse,
+    load_saved_cookie,
     parse_json_response,
     print_web_response,
     redact_sensitive_values,
@@ -178,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
     version = sub.add_parser("version", help="Print the lbd version.")
     version.add_argument("--format", choices=("table", "json"), default="table")
     version.set_defaults(func=cmd_version, no_db=True)
+
+    doctor = sub.add_parser("doctor", help="Check local install, session, database, and Letterboxd reachability.")
+    doctor.add_argument("--format", choices=("table", "json"), default="table")
+    doctor.add_argument("--skip-network", action="store_true", help="Skip Letterboxd reachability and sign-in checks.")
+    doctor.set_defaults(func=cmd_doctor, no_db=True)
 
     load = sub.add_parser("load", help="Load a Letterboxd export ZIP, folder, or CSV.")
     load.add_argument("path", help="Path to a Letterboxd export ZIP, extracted folder, or CSV file.")
@@ -655,6 +661,123 @@ def cmd_version(db: sqlite3.Connection | None, args: argparse.Namespace) -> int:
     else:
         print(f"lbd {__version__}")
     return 0
+
+
+def cmd_doctor(db: sqlite3.Connection | None, args: argparse.Namespace) -> int:
+    checks = [
+        doctor_check("version", "ok", f"lbd {__version__}"),
+        doctor_session_check(Path(args.session_file).expanduser()),
+        doctor_database_check(Path(args.db).expanduser()),
+    ]
+    checks.extend(doctor_network_checks(args))
+
+    ok = not any(check["status"] == "fail" for check in checks)
+    if args.format == "json":
+        print(json.dumps({"ok": ok, "checks": checks}, indent=2))
+    else:
+        print_table(
+            [
+                {
+                    "status": check["status"].upper(),
+                    "name": check["name"],
+                    "detail": check["detail"],
+                    "hint": check.get("hint", ""),
+                }
+                for check in checks
+            ],
+            ["status", "name", "detail", "hint"],
+        )
+    return 0 if ok else 1
+
+
+def doctor_check(name: str, status: str, detail: str, *, hint: str = "") -> dict[str, str]:
+    check = {"name": name, "status": status, "detail": detail}
+    if hint:
+        check["hint"] = hint
+    return check
+
+
+def doctor_session_check(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return doctor_check(
+            "session",
+            "warn",
+            f"No saved session at {path}.",
+            hint="Run lbd login --browser auto or pass --cookie for live account commands.",
+        )
+    try:
+        cookie = load_saved_cookie(path)
+        mode = path.stat().st_mode & 0o777
+    except (OSError, ValueError) as exc:
+        return doctor_check("session", "fail", f"Cannot read saved session at {path}: {exc}")
+    if not cookie:
+        return doctor_check("session", "fail", f"Saved session at {path} does not contain a valid cookie.")
+    if mode & 0o077:
+        return doctor_check("session", "warn", f"Saved session at {path} is readable by other users.", hint="chmod 600")
+    return doctor_check("session", "ok", f"Saved session present at {path}.")
+
+
+def doctor_database_check(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return doctor_check(
+            "database",
+            "warn",
+            f"No local database at {path}.",
+            hint="Run lbd load <export.zip> or lbd sync to populate the cache.",
+        )
+    try:
+        with connect(path, readonly=True) as db:
+            row = db.execute("SELECT COUNT(*) AS count FROM entries").fetchone()
+    except (sqlite3.Error, ValueError) as exc:
+        return doctor_check("database", "fail", f"Cannot read local database at {path}: {exc}")
+    count = int(row["count"] if row is not None else 0)
+    return doctor_check("database", "ok", f"Local database contains {count} row(s).")
+
+
+def doctor_network_checks(args: argparse.Namespace) -> list[dict[str, str]]:
+    if args.skip_network:
+        return [
+            doctor_check(
+                "network",
+                "warn",
+                "Skipped Letterboxd reachability and signed-in session checks.",
+                hint="Run without --skip-network before publishing or debugging auth.",
+            )
+        ]
+
+    checks: list[dict[str, str]] = []
+    try:
+        client = LetterboxdWebClient.from_args(args)
+        response = client.get("/")
+    except (OSError, ValueError, LetterboxdWebError) as exc:
+        return [doctor_check("network", "fail", f"Cannot reach Letterboxd: {exc}")]
+
+    if response.status >= 500:
+        checks.append(doctor_check("network", "fail", f"Letterboxd returned HTTP {response.status}."))
+    else:
+        checks.append(doctor_check("network", "ok", f"Letterboxd returned HTTP {response.status}."))
+
+    if not client.cookie:
+        checks.append(
+            doctor_check(
+                "auth",
+                "warn",
+                "No saved session loaded for signed-in checks.",
+                hint="Run lbd login --browser auto to import browser cookies.",
+            )
+        )
+        return checks
+
+    try:
+        username = detect_username(client)
+    except (OSError, LetterboxdWebError) as exc:
+        checks.append(doctor_check("auth", "fail", f"Could not verify signed-in session: {exc}"))
+    else:
+        if username:
+            checks.append(doctor_check("auth", "ok", f"Signed in as {username}."))
+        else:
+            checks.append(doctor_check("auth", "fail", "Letterboxd did not accept the saved session as signed in."))
+    return checks
 
 
 def cmd_load(db: sqlite3.Connection, args: argparse.Namespace) -> int:
